@@ -2,8 +2,8 @@
 Hlídač volných termínů u Dr. Bittnera (VSTUPNÍ vyšetření)
 na https://andrologickaklinika.reenio.cz
 
-Volá přímo Reenio JSON API – žádný headless browser.
-Spouští se cronem v GitHub Actions. Nový volný slot → Telegram zpráva.
+Volá přímo Reenio JSON API. Slot je volný pouze pokud není v reservations
+ani v žádném collision (lékař/místo/služba). Nový volný slot → Telegram.
 """
 
 from __future__ import annotations
@@ -81,6 +81,10 @@ def open_session() -> requests.Session:
     return s
 
 
+def _parse_utc(s: str) -> datetime:
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
 def get_open_days(s: requests.Session) -> list[str]:
     now_local = datetime.now(PRAGUE).replace(hour=0, minute=0, second=0, microsecond=0)
     start_utc = (now_local - timedelta(days=1)).astimezone(timezone.utc)
@@ -100,9 +104,33 @@ def get_open_days(s: requests.Session) -> list[str]:
     for key, info in days_dict.items():
         if not info.get("isOpen"):
             continue
-        utc_dt = datetime.strptime(key, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        utc_dt = _parse_utc(key)
         out.add(utc_dt.astimezone(PRAGUE).date().isoformat())
     return sorted(out)
+
+
+def _collect_busy_ranges(ev: dict) -> list[tuple[datetime, datetime]]:
+    """Sebere všechny obsazené intervaly: reservations + collisions všech subzdrojů."""
+    busy: list[tuple[datetime, datetime]] = []
+    for res in ev.get("reservations") or []:
+        try:
+            busy.append((_parse_utc(res["start"]), _parse_utc(res["end"])))
+        except (KeyError, ValueError):
+            continue
+    for _key, intervals in (ev.get("collisions") or {}).items():
+        for ci in intervals or []:
+            try:
+                busy.append((_parse_utc(ci["start"]), _parse_utc(ci["end"])))
+            except (KeyError, ValueError):
+                continue
+    for _key, intervals in (ev.get("subResourceReservations") or {}).items():
+        if isinstance(intervals, list):
+            for ci in intervals:
+                try:
+                    busy.append((_parse_utc(ci["start"]), _parse_utc(ci["end"])))
+                except (KeyError, ValueError):
+                    continue
+    return busy
 
 
 def get_bittner_vstupni_slots(s: requests.Session, ymd: str) -> list[str]:
@@ -128,20 +156,23 @@ def get_bittner_vstupni_slots(s: requests.Session, ymd: str) -> list[str]:
             for er in resources
         ):
             continue
+        if not ev.get("isEnabled", True) or not ev.get("isEnabledForCustomer", True):
+            continue
         interval = ev.get("reservationIntervalSize") or 0
         if interval <= 0:
             continue
         try:
-            ev_start = datetime.strptime(ev["start"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            ev_end = datetime.strptime(ev["end"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            ev_start = _parse_utc(ev["start"])
+            ev_end = _parse_utc(ev["end"])
         except (KeyError, ValueError):
             continue
-        booked = {res["start"] for res in (ev.get("reservations") or []) if "start" in res}
+        busy = _collect_busy_ranges(ev)
         cursor = ev_start
         step = timedelta(minutes=interval)
         while cursor + step <= ev_end:
-            iso = cursor.strftime("%Y-%m-%dT%H:%M:%SZ")
-            if iso not in booked:
+            slot_end = cursor + step
+            blocked = any(bs < slot_end and cursor < be for bs, be in busy)
+            if not blocked:
                 out.add(cursor.astimezone(PRAGUE).strftime("%H:%M"))
             cursor += step
     return sorted(out)
