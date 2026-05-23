@@ -22,6 +22,7 @@ DOCTOR_PATH = "dr-bittner-1166"
 DOCTOR_NAME_KEYWORD = "Bittner"
 SERVICE_KEYWORD = "VSTUPN"
 LOOKAHEAD_DAYS = 90
+MAX_DATE = "2026-07-21"  # hlídat jen do tohoto data (mám rezervaci)
 STATE_PATH = Path("state.json")
 PRAGUE = ZoneInfo("Europe/Prague")
 
@@ -106,7 +107,7 @@ def get_open_days(s: requests.Session) -> list[str]:
             continue
         utc_dt = _parse_utc(key)
         out.add(utc_dt.astimezone(PRAGUE).date().isoformat())
-    return sorted(out)
+    return [d for d in sorted(out) if d <= MAX_DATE]
 
 
 def _collect_busy_ranges(ev: dict) -> list[tuple[datetime, datetime]]:
@@ -195,6 +196,9 @@ def collect_available() -> dict[str, list[str]]:
 
 def main() -> int:
     print(f"[{datetime.now(PRAGUE).isoformat(timespec='seconds')}] start")
+        if datetime.now(PRAGUE).date().isoformat() > MAX_DATE:
+        print(f"Po {MAX_DATE}, hlídání ukončeno.")
+        return 0
     try:
         current = collect_available()
     except Exception as e:
