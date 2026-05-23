@@ -196,7 +196,7 @@ def collect_available() -> dict[str, list[str]]:
 
 def main() -> int:
     print(f"[{datetime.now(PRAGUE).isoformat(timespec='seconds')}] start")
-        if datetime.now(PRAGUE).date().isoformat() > MAX_DATE:
+    if datetime.now(PRAGUE).date().isoformat() > MAX_DATE:
         print(f"Po {MAX_DATE}, hlídání ukončeno.")
         return 0
     try:
